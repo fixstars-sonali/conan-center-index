@@ -1,20 +1,9 @@
-from conan import ConanFile
-from conan.tools.meson import Meson,MesonToolchain
-from conan.tools.env import VirtualBuildEnv, VirtualRunEnv 
-from conan.tools.gnu import PkgConfigDeps, PkgConfig 
-from conan.tools.microsoft import is_msvc, is_msvc_static_runtime, msvc_runtime_flag
-from conan.tools.scm import Version
-from conan.errors import ConanInvalidConfiguration
-from conan.tools.layout import basic_layout
-from conan.tools.files import apply_conandata_patches, chdir, copy, export_conandata_patches, get, rename, rm, rmdir
-from conan.tools.build import cross_building
-
-
+from conans import ConanFile, tools, Meson, VisualStudioBuildEnvironment
+from conans.errors import ConanInvalidConfiguration
 import glob
 import os
 import shutil
 
-required_conan_version = ">=1.56.0 <2 || >=2.0.6"
 
 class GStPluginsBaseConan(ConanFile):
     name = "gst-plugins-base"
@@ -61,6 +50,9 @@ class GStPluginsBaseConan(ConanFile):
         "with_xorg": True,
         "with_introspection": False,
         }
+    _source_subfolder = "source_subfolder"
+    _build_subfolder = "build_subfolder"
+    exports_sources = ["patches/*.patch"]
 
     generators = "pkg_config"
 
@@ -68,6 +60,9 @@ class GStPluginsBaseConan(ConanFile):
     _gl_platform = None
     _gl_winsys = None
 
+    @property
+    def _is_msvc(self):
+        return self.settings.compiler == "Visual Studio"
 
     def validate(self):
         if not self.options["glib"].shared and self.options.shared:
@@ -76,9 +71,9 @@ class GStPluginsBaseConan(ConanFile):
         if self.options.shared != self.options["gstreamer"].shared:
             # https://gitlab.freedesktop.org/gstreamer/gst-build/-/issues/133
             raise ConanInvalidConfiguration("GStreamer and GstPlugins must be either all shared, or all static")
-        if Version(self.version) >= "1.18.2" and\
+        if tools.Version(self.version) >= "1.18.2" and\
            self.settings.compiler == "gcc" and\
-           Version(self.settings.compiler.version) < "5":
+           tools.Version(self.settings.compiler.version) < "5":
             raise ConanInvalidConfiguration(
                 "gst-plugins-base %s does not support gcc older than 5" % self.version
             )
@@ -88,8 +83,8 @@ class GStPluginsBaseConan(ConanFile):
     def configure(self):
         if self.options.shared:
             del self.options.fPIC
-        self.settings.rm_safe("compiler.cppstd")
-        self.settings.rm_safe("compiler.libcxx")
+        del self.settings.compiler.libcxx
+        del self.settings.compiler.cppstd
         self.options['gstreamer'].shared = self.options.shared
 
     def config_options(self):
@@ -102,13 +97,10 @@ class GStPluginsBaseConan(ConanFile):
             del self.options.with_egl
             del self.options.with_xorg
 
-    def layout(self):
-        basic_layout(self, src_folder="src")
-
     def requirements(self):
         self.requires("zlib/1.2.12")
-        self.requires("glib/2.77.0", transitive_headers=True)
-        self.requires("gstreamer/1.22.3")
+        self.requires("glib/2.72.0")
+        self.requires("gstreamer/1.19.2")
         if self.options.get_safe("with_libalsa"):
             self.requires("libalsa/1.2.5.1")
         if self.options.get_safe("with_xorg"):
@@ -144,19 +136,19 @@ class GStPluginsBaseConan(ConanFile):
 
     def build_requirements(self):
         self.build_requires("meson/0.61.2")
-        if not self.conf.get("tools.gnu:pkg_config", check_type=str):
-            self.tool_requires("pkgconf/1.9.5")
-        if self.settings.os == "Windows":
-            self.tool_requires("winflexbison/2.5.25")
+        if not tools.which("pkg-config"):
+            self.build_requires("pkgconf/1.7.4")
+        if self.settings.os == 'Windows':
+            self.build_requires("winflexbison/2.5.24")
         else:
-            self.tool_requires("flex/2.6.4")
-            self.tool_requires("bison/3.8.2")
+            self.build_requires("bison/3.7.6")
+            self.build_requires("flex/2.6.4")
         if self.options.with_introspection:
-            self.build_requires("gobject-introspection/1.78.0")
+            self.build_requires("gobject-introspection/1.70.0")
 
     def source(self):
-        get(self, **self.conan_data["sources"][self.version], strip_root=True)
-
+        tools.get(**self.conan_data["sources"][self.version],
+                  destination=self._source_subfolder, strip_root=True)
 
     def _gl_config(self):
         if not self._gl_api or not self._gl_platform or not self._gl_winsys:
@@ -191,70 +183,72 @@ class GStPluginsBaseConan(ConanFile):
             self._gl_platform = list(gl_platform)
             self._gl_winsys = list(gl_winsys)
         return self._gl_api, self._gl_platform, self._gl_winsys
-    
-    def generate(self):
-        env = VirtualBuildEnv(self)
-        env.generate()
-        if not cross_building(self):
-            env = VirtualRunEnv(self)
-            env.generate(scope="build")
 
-        tc = MesonToolchain(self)
+    def _configure_meson(self):
+        defs = dict()
 
-        def add_compiler_flag(value):            
-            tc.cpp_args.append(value)
-            tc.c_args.append(value)
+        def add_flag(name, value):
+            if name in defs:
+                defs[name] += " " + value
+            else:
+                defs[name] = value
+
+        def add_compiler_flag(value):
+            add_flag("c_args", value)
+            add_flag("cpp_args", value)
 
         def add_linker_flag(value):
-            tc.c_link_args.append(value)
-            tc.cpp_link_args.append(value)
+            add_flag("c_link_args", value)
+            add_flag("cpp_link_args", value)
 
-        if self.settings.compiler == "msvc":
+        meson = Meson(self)
+        if self.settings.compiler == "Visual Studio":
             add_linker_flag("-lws2_32")
             add_compiler_flag("-%s" % self.settings.compiler.runtime)
             if int(str(self.settings.compiler.version)) < 14:
                 add_compiler_flag("-Dsnprintf=_snprintf")
         if self.settings.get_safe("compiler.runtime"):
-            tc.project_options["b_vscrt"] = str(self.settings.compiler.runtime).lower()
+            defs["b_vscrt"] = str(self.settings.compiler.runtime).lower()
 
         gl_api, gl_platform, gl_winsys = self._gl_config()
 
-        tc.project_options["tools"] = "disabled"
-        tc.project_options["examples"] = "disabled"
-        tc.project_options["tests"] = "disabled"
-        tc.project_options["wrap_mode"] = "nofallback"
-        tc.project_options["introspection"] = "enabled" if self.options.with_introspection else "disabled"
-        tc.project_options["orc"] = "disabled" # TODO: orc
-        tc.project_options["gl"] = "enabled" if self.options.with_gl else "disabled"
-        tc.project_options["gl-graphene"] = "enabled" if self.options.with_gl and self.options.with_graphene else "disabled"
-        tc.project_options["gl-png"] = "enabled" if self.options.with_gl and self.options.with_libpng else "disabled"
-        tc.project_options["gl-jpeg"] = "enabled" if self.options.with_gl and self.options.with_libjpeg else "disabled"
-        tc.project_options["gl_api"] = gl_api
-        tc.project_options["gl_platform"] = gl_platform
-        tc.project_options["gl_winsys"] = gl_winsys
-        tc.project_options["alsa"] = "enabled" if self.options.get_safe("with_libalsa") else "disabled"
-        tc.project_options["cdparanoia"] = "disabled" # "enabled" if self.options.with_cdparanoia else "disabled" # TODO: cdparanoia
-        tc.project_options["libvisual"] = "disabled" # "enabled" if self.options.with_libvisual else "disabled" # TODO: libvisual
-        tc.project_options["ogg"] = "enabled" if self.options.with_ogg else "disabled"
-        tc.project_options["opus"] = "enabled" if self.options.with_opus else "disabled"
-        tc.project_options["pango"] = "enabled" if self.options.with_pango else "disabled"
-        tc.project_options["theora"] = "enabled" if self.options.with_theora else "disabled"
-        tc.project_options["tremor"] = "disabled" # "enabled" if self.options.with_tremor else "disabled" # TODO: tremor - only useful on machines without floating-point support
-        tc.project_options["vorbis"] = "enabled" if self.options.with_vorbis else "disabled"
-        tc.project_options["x11"] = "enabled" if self.options.get_safe("with_xorg") else "disabled"
-        tc.project_options["xshm"] = "enabled" if self.options.get_safe("with_xorg") else "disabled"
-        tc.project_options["xvideo"] = "enabled" if self.options.get_safe("with_xorg") else "disabled"
-        tc.generate()
+        defs["tools"] = "disabled"
+        defs["examples"] = "disabled"
+        defs["tests"] = "disabled"
+        defs["wrap_mode"] = "nofallback"
+        defs["introspection"] = "enabled" if self.options.with_introspection else "disabled"
+        defs["orc"] = "disabled" # TODO: orc
+        defs["gl"] = "enabled" if self.options.with_gl else "disabled"
+        defs["gl-graphene"] = "enabled" if self.options.with_gl and self.options.with_graphene else "disabled"
+        defs["gl-png"] = "enabled" if self.options.with_gl and self.options.with_libpng else "disabled"
+        defs["gl-jpeg"] = "enabled" if self.options.with_gl and self.options.with_libjpeg else "disabled"
+        defs["gl_api"] = gl_api
+        defs["gl_platform"] = gl_platform
+        defs["gl_winsys"] = gl_winsys
+        defs["alsa"] = "enabled" if self.options.get_safe("with_libalsa") else "disabled"
+        defs["cdparanoia"] = "disabled" # "enabled" if self.options.with_cdparanoia else "disabled" # TODO: cdparanoia
+        defs["libvisual"] = "disabled" # "enabled" if self.options.with_libvisual else "disabled" # TODO: libvisual
+        defs["ogg"] = "enabled" if self.options.with_ogg else "disabled"
+        defs["opus"] = "enabled" if self.options.with_opus else "disabled"
+        defs["pango"] = "enabled" if self.options.with_pango else "disabled"
+        defs["theora"] = "enabled" if self.options.with_theora else "disabled"
+        defs["tremor"] = "disabled" # "enabled" if self.options.with_tremor else "disabled" # TODO: tremor - only useful on machines without floating-point support
+        defs["vorbis"] = "enabled" if self.options.with_vorbis else "disabled"
+        defs["x11"] = "enabled" if self.options.get_safe("with_xorg") else "disabled"
+        defs["xshm"] = "enabled" if self.options.get_safe("with_xorg") else "disabled"
+        defs["xvideo"] = "enabled" if self.options.get_safe("with_xorg") else "disabled"
+        meson.configure(build_folder=self._build_subfolder,
+                        source_folder=self._source_subfolder,
+                        defs=defs)
+        return meson
 
-        deps = PkgConfigDeps(self)
-        deps.generate()
-
-   
     def build(self):
-        apply_conandata_patches(self)
-        meson = Meson(self)
-        meson.configure()
-        meson.build()
+        for patch in self.conan_data.get("patches", {}).get(self.version, []):
+            tools.patch(**patch)
+
+        with tools.environment_append(VisualStudioBuildEnvironment(self).vars) if self._is_msvc else tools.no_op():
+            meson = self._configure_meson()
+            meson.build()
 
     def _fix_library_names(self, path):
         # regression in 1.16
@@ -267,16 +261,16 @@ class GStPluginsBaseConan(ConanFile):
 
     def package(self):
         self.copy(pattern="COPYING", dst="licenses", src=self._source_subfolder)
-        meson = Meson(self)
-        meson.install()
-        
+        with tools.environment_append(VisualStudioBuildEnvironment(self).vars) if self._is_msvc else tools.no_op():
+            meson = self._configure_meson()
+            meson.install()
+
         self._fix_library_names(os.path.join(self.package_folder, "lib"))
         self._fix_library_names(os.path.join(self.package_folder, "lib", "gstreamer-1.0"))
-
-        rmdir(self,os.path.join(self.package_folder, "share"))
-        rmdir(self,os.path.join(self.package_folder, "lib", "pkgconfig"))
-        rmdir(self,os.path.join(self.package_folder, "lib", "gstreamer-1.0", "pkgconfig"))
-        rm(self, "*.pdb", self.package_folder, recursive=True)
+        tools.rmdir(os.path.join(self.package_folder, "share"))
+        tools.rmdir(os.path.join(self.package_folder, "lib", "pkgconfig"))
+        tools.rmdir(os.path.join(self.package_folder, "lib", "gstreamer-1.0", "pkgconfig"))
+        tools.remove_files_by_mask(self.package_folder, "*.pdb")
 
     def package_id(self):
         self.info.requires["glib"].full_package_mode()
@@ -301,7 +295,7 @@ class GStPluginsBaseConan(ConanFile):
 
         if self.options.shared:
             self.output.info("Appending GST_PLUGIN_PATH env var : %s" % gst_plugin_path)
-            self.runenv_info.prepend_path("GST_PLUGIN_PATH", gst_plugin_path)
+            self.env_info.GST_PLUGIN_PATH.append(gst_plugin_path)
 
         # Plugins ('gst')
         self.cpp_info.components["gstadder"].libs = ["gstadder"]
