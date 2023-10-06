@@ -47,22 +47,21 @@ class GStreamerConan(ConanFile):
         basic_layout(self, src_folder="src")
 
     def requirements(self):
-        self.requires("glib/2.76.3", transitive_headers=True, transitive_libs=True)
+        self.requires("glib/2.77.0", transitive_headers=True, transitive_libs=True)
+        if self.options.with_introspection:
+            self.requires("gobject-introspection/1.72.0")
 
-    def validate(self):
-        if not self.dependencies.direct_host["glib"].options.shared and self.info.options.shared:
-            # https://gitlab.freedesktop.org/gstreamer/gst-build/-/issues/133
-            raise ConanInvalidConfiguration("shared GStreamer cannot link to static GLib")
+    # def validate(self):
+    #     if not self.dependencies.direct_host["glib"].options.shared and self.info.options.shared:
+    #         # https://gitlab.freedesktop.org/gstreamer/gst-build/-/issues/133
+    #         raise ConanInvalidConfiguration("shared GStreamer cannot link to static GLib")
 
     def build_requirements(self):
         self.tool_requires("meson/1.1.1")
-        # There used to be an issue with glib being shared by default but its dependencies being static
-        # No longer the case, but see: https://github.com/conan-io/conan-center-index/pull/13400#issuecomment-1551565573 for context
-        self.tool_requires("glib/2.76.3")
+        self.tool_requires("glib/<host_version>")
         if not self.conf.get("tools.gnu:pkg_config", default=False, check_type=str):
             self.tool_requires("pkgconf/1.9.3")
-        if self.options.with_introspection:
-            self.tool_requires("gobject-introspection/1.72.0")
+       
         if self.settings.os == 'Windows':
             self.tool_requires("winflexbison/2.5.24")
         else:
