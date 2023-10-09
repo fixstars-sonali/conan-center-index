@@ -2,6 +2,9 @@ sources:
   "1.78.0":
     sha256: "84f5bd2038bd52abbce74a639832c5b46a2d17e9c5a8ae14f9788e8516c04166"
     url: "https://download.gnome.org/sources/gobject-introspection/1.78/gobject-introspection-1.78.0.tar.xz"
+  "1.73.0":
+    sha256: "d645218ce1451285b8b4f0935e35dbc1e419f50ceb643b7d66f59e38fcc08776"
+    url: "https://download.gnome.org/sources/gobject-introspection/1.73/gobject-introspection-1.73.0.tar.xz"
   "1.72.0":
     sha256: "02fe8e590861d88f83060dd39cda5ccaa60b2da1d21d0f95499301b186beaabc"
     url: "https://download.gnome.org/sources/gobject-introspection/1.72/gobject-introspection-1.72.0.tar.xz"
